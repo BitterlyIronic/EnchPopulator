@@ -11,6 +11,7 @@ using Mutagen.Bethesda.FormKeys.SkyrimSE;
 namespace EnchPopulator
 {
     public class Settings {
+        public List<ModKey> SourceMods = new() { ModKey.FromFileName("Skyrim.esm"), ModKey.FromFileName("Dragonborn.esm"), ModKey.FromFileName("Thaumaturgy.esp") };
         public Dictionary<string, List<string>> ArmorToPatch { get; set; } = new();
         public Dictionary<string, List<string>> WeaponToPatch { get; set; } = new();
     }
@@ -30,9 +31,8 @@ namespace EnchPopulator
 
         public static void RunPatch(IPatcherState<ISkyrimMod, ISkyrimModGetter> state)
         {
-			var coreMods = new List<ModKey> { ModKey.FromFileName("Skyrim.esm"), ModKey.FromFileName("Dragonborn.esm"), ModKey.FromFileName("Thaumaturgy.esp") }.Select(x => state.LoadOrder.GetIfEnabled(x));
-            var coreCache = coreMods.ToImmutableLinkCache();
             var settingsValue = settings?.Value ?? throw new Exception();
+            var coreCache = settingsValue.SourceMods.Select(x => state.LoadOrder.GetIfEnabled(x)).ToImmutableLinkCache();
 
 			var armorListsToPatch = settingsValue.ArmorToPatch
                 .ToDictionary(x => state.LinkCache.Resolve<IArmorGetter>(x.Key),
