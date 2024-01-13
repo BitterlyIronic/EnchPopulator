@@ -12,13 +12,14 @@ namespace EnchPopulator
 {
     public class Settings {
         public List<ModKey> SourceMods = new() { ModKey.FromFileName("Skyrim.esm"), ModKey.FromFileName("Dragonborn.esm"), ModKey.FromFileName("Thaumaturgy.esp") };
-        public Dictionary<string, List<string>> ArmorToPatch { get; set; } = new();
-        public Dictionary<string, List<string>> WeaponToPatch { get; set; } = new();
+        public Dictionary<string, List<string>> ItemsToPatch { get; set; } = new();
+        public bool SkipBethItems = true;
     }
 
     public class Program
     {
         private static Lazy<Settings>? settings;
+        private static List<ModKey> BethesdaSources = new() { ModKey.FromFileName("Skyrim.esm"), ModKey.FromFileName("Dragonborn.esm"), ModKey.FromFileName("Dawnguard.esm"), ModKey.FromFileName("HearthFires.esm") };
 
         public static async Task<int> Main(string[] args)
         {
@@ -34,22 +35,34 @@ namespace EnchPopulator
             var settingsValue = settings?.Value ?? throw new Exception();
             var coreCache = settingsValue.SourceMods.Select(x => state.LoadOrder.GetIfEnabled(x)).ToImmutableLinkCache();
 
-			var armorListsToPatch = settingsValue.ArmorToPatch
-                .ToDictionary(x => state.LinkCache.Resolve<IArmorGetter>(x.Key),
-                              x => x.Value.Select(y => state.LinkCache.Resolve<ILeveledItemGetter>(y).ToLink()).ToList());
-			var weaponListsToPatch = settingsValue.WeaponToPatch
-                .ToDictionary(x => state.LinkCache.Resolve<IWeaponGetter>(x.Key),
+			var itemListsToPatch = settingsValue.ItemsToPatch
+                .ToDictionary(x => state.LinkCache.Resolve<ISkyrimMajorRecordGetter>(x.Key),
                               x => x.Value.Select(y => state.LinkCache.Resolve<ILeveledItemGetter>(y).ToLink()).ToList());
 
-            foreach (var (baseArmor, armorLists) in armorListsToPatch)
-                foreach (var armorList in armorLists)
-                    if (armorList.TryResolve(coreCache, out var thaumList))
-                        ProcessList(state, baseArmor, thaumList, coreCache);
+            foreach (var (baseListOrItem, itemLists) in itemListsToPatch) {
+                ProcessItems(state, coreCache, baseListOrItem, itemLists);
+            }
+        }
 
-            foreach (var (baseWeapon, weaponLists) in weaponListsToPatch)
-                foreach (var weaponList in weaponLists)
-                    if (weaponList.TryResolve(coreCache, out var thaumList))
-                        ProcessList(state, baseWeapon, thaumList, coreCache);
+        public static void ProcessItems(IPatcherState<ISkyrimMod, ISkyrimModGetter> state, ILinkCache<ISkyrimMod, ISkyrimModGetter> coreCache, ISkyrimMajorRecordGetter baseListOrItem, List<IFormLink<ILeveledItemGetter>> itemLists) {
+            var settingsValue = settings?.Value ?? throw new Exception();
+
+            switch (baseListOrItem) {
+                case ILeveledItemGetter baseList:
+                    foreach (var entry in baseList.Entries!) {
+                    	if (entry!.Data!.Reference!.TryResolve(state.LinkCache, out var baseItem)) {
+                            if (settingsValue.SkipBethItems && BethesdaSources.Contains(baseItem.FormKey.ModKey)) continue;
+                        	ProcessItems(state, coreCache, baseItem, itemLists);
+                        }
+                    }
+                    break;
+                case IItemGetter baseItem:
+                    foreach (var itemList in itemLists)
+                        if (itemList.TryResolve(coreCache, out var thaumList))
+                            ProcessList(state, baseItem, thaumList, coreCache);
+                    break;
+                default: break;
+            }
         }
 
         public static void ProcessList(IPatcherState<ISkyrimMod, ISkyrimModGetter> state, IItemGetter baseItem, ILeveledItemGetter list, ILinkCache<ISkyrimMod, ISkyrimModGetter> coreCache) {
