@@ -14,12 +14,14 @@ namespace EnchPopulator
         public List<ModKey> SourceMods = new() { ModKey.FromFileName("Skyrim.esm"), ModKey.FromFileName("Dragonborn.esm"), ModKey.FromFileName("Thaumaturgy.esp") };
         public Dictionary<string, List<string>> ItemsToPatch { get; set; } = new();
         public bool SkipBethItems = true;
+        public bool AddSubLists = false;
     }
 
     public class Program
     {
         private static Lazy<Settings>? settings;
         private static List<ModKey> BethesdaSources = new() { ModKey.FromFileName("Skyrim.esm"), ModKey.FromFileName("Dragonborn.esm"), ModKey.FromFileName("Dawnguard.esm"), ModKey.FromFileName("HearthFires.esm") };
+        private static Dictionary<FormKey, ILeveledItem> subLists = new();
 
         public static async Task<int> Main(string[] args)
         {
@@ -59,13 +61,13 @@ namespace EnchPopulator
                 case IItemGetter baseItem:
                     foreach (var itemList in itemLists)
                         if (itemList.TryResolve(coreCache, out var thaumList))
-                            ProcessList(state, baseItem, thaumList, coreCache);
+                            ProcessList(state, baseItem, thaumList, coreCache, settingsValue.AddSubLists);
                     break;
                 default: break;
             }
         }
 
-        public static void ProcessList(IPatcherState<ISkyrimMod, ISkyrimModGetter> state, IItemGetter baseItem, ILeveledItemGetter list, ILinkCache<ISkyrimMod, ISkyrimModGetter> coreCache) {
+        public static void ProcessList(IPatcherState<ISkyrimMod, ISkyrimModGetter> state, IItemGetter baseItem, ILeveledItemGetter list, ILinkCache<ISkyrimMod, ISkyrimModGetter> coreCache, bool useSubLists) {
             Console.WriteLine($"{list.EditorID}");
             foreach (var entry in list.Entries ?? throw new Exception()) {
                 var curRef = entry.Data!.Reference;
@@ -73,13 +75,21 @@ namespace EnchPopulator
                 if (curRef.TryResolve(coreCache, out var source)) {
                     switch (source) {
                         case ILeveledItemGetter sublist:
-                            ProcessList(state, baseItem, sublist, coreCache);
+                            ProcessList(state, baseItem, sublist, coreCache, useSubLists);
                             break;
                         case IWeaponGetter weaponRecord:
                             Console.WriteLine($"{weaponRecord.Name}");
                             if (list.ToLink().TryResolveContext<ISkyrimMod, ISkyrimModGetter, ILeveledItem, ILeveledItemGetter>(coreCache, out var weaponListContext)) {
                                 if (baseItem is not IWeaponGetter baseWeapon) break;
                                 if (!weaponRecord.ObjectEffect.TryResolve(state.LinkCache, out var effect)) break;
+
+                                if (useSubLists) {
+                                    if (!subLists.ContainsKey(baseWeapon.FormKey)) {
+                                        subLists[baseWeapon.FormKey] = state.PatchMod.LeveledItems.AddNew();
+                                        subLists[baseWeapon.FormKey].EditorID = $"{baseWeapon.EditorID}Sublist";
+                                        subLists[baseWeapon.FormKey].Entries ??= new();
+                                    }
+                                }
                                 
                                 var localList = weaponListContext.GetOrAddAsOverride(state.PatchMod);
                                 var eId = $"{baseWeapon.EditorID}{effect.EditorID}";
@@ -96,16 +106,40 @@ namespace EnchPopulator
                                     newItem.BasicStats.Value = baseWeapon.BasicStats?.Value ?? 0;
                                 }
 
-                                if (!localList?.Entries?.Any(x => x?.Data?.Reference.Equals(newItem) ?? false) ?? false)
-                                    localList?.Entries?.Add(new LeveledItemEntry
-                                    {
-                                        Data = new LeveledItemEntryData
+                                if (useSubLists) {
+                                    if (!subLists[baseWeapon.FormKey]?.Entries?.Any(x => x?.Data?.Reference.Equals(subLists[baseWeapon.FormKey]) ?? false) ?? false)
+                                        subLists[baseWeapon.FormKey]?.Entries?.Add(new LeveledItemEntry
+                                            {
+                                                Data = new LeveledItemEntryData
+                                                {
+                                                    Count = entry.Data!.Count,
+                                                    Level = entry.Data!.Level,
+                                                    Reference = newItem.ToLink()
+                                                }
+                                            });
+
+                                    if (!localList?.Entries?.Any(x => x?.Data?.Reference.Equals(subLists[baseWeapon.FormKey]) ?? false) ?? false)
+                                        localList?.Entries?.Add(new LeveledItemEntry
                                         {
-                                            Count = entry.Data!.Count,
-                                            Level = entry.Data!.Level,
-                                            Reference = newItem.ToLink()
-                                        }
-                                    });
+                                            Data = new LeveledItemEntryData
+                                            {
+                                                Count = 1,
+                                                Level = 1,
+                                                Reference = subLists[baseWeapon.FormKey].ToLink()
+                                            }
+                                        });
+                                } else {
+                                    if (!localList?.Entries?.Any(x => x?.Data?.Reference.Equals(newItem) ?? false) ?? false)
+                                        localList?.Entries?.Add(new LeveledItemEntry
+                                        {
+                                            Data = new LeveledItemEntryData
+                                            {
+                                                Count = entry.Data!.Count,
+                                                Level = entry.Data!.Level,
+                                                Reference = newItem.ToLink()
+                                            }
+                                        });
+                                }
                             }
                             break;
                         case IArmorGetter armorRecord:
@@ -116,6 +150,14 @@ namespace EnchPopulator
                                 
                                 var localList = armorListContext.GetOrAddAsOverride(state.PatchMod);
                                 var eId = $"{baseArmor.EditorID}{effect.EditorID}";
+
+                                if (useSubLists) {
+                                    if (!subLists.ContainsKey(baseArmor.FormKey)) {
+                                        subLists[baseArmor.FormKey] = state.PatchMod.LeveledItems.AddNew();
+                                        subLists[baseArmor.FormKey].EditorID = $"{baseArmor.EditorID}Sublist";
+                                        subLists[baseArmor.FormKey].Entries ??= new();
+                                    }
+                                }
                                 
                                 if (!state.LinkCache.TryResolve<IArmor>(eId, out var newItem)) {
                                     newItem = state.PatchMod.Armors.AddNew(eId);
@@ -127,16 +169,40 @@ namespace EnchPopulator
                                     newItem.Value = baseArmor.Value;
                                 }
 
-                                if (!localList?.Entries?.Any(x => x?.Data?.Reference.Equals(newItem) ?? false) ?? false)
-                                    localList?.Entries?.Add(new LeveledItemEntry
-                                    {
-                                        Data = new LeveledItemEntryData
+                                if (useSubLists) {
+                                    if (!subLists[baseArmor.FormKey]?.Entries?.Any(x => x?.Data?.Reference.Equals(newItem) ?? false) ?? false)
+                                        subLists[baseArmor.FormKey]?.Entries?.Add(new LeveledItemEntry
+                                            {
+                                                Data = new LeveledItemEntryData
+                                                {
+                                                    Count = entry.Data!.Count,
+                                                    Level = entry.Data!.Level,
+                                                    Reference = newItem.ToLink()
+                                                }
+                                            });
+
+                                    if (!localList?.Entries?.Any(x => x?.Data?.Reference.Equals(subLists[baseArmor.FormKey]) ?? false) ?? false)
+                                        localList?.Entries?.Add(new LeveledItemEntry
                                         {
-                                            Count = entry.Data!.Count,
-                                            Level = entry.Data!.Level,
-                                            Reference = newItem.ToLink()
-                                        }
-                                    });
+                                            Data = new LeveledItemEntryData
+                                            {
+                                                Count = 1,
+                                                Level = 1,
+                                                Reference = subLists[baseArmor.FormKey].ToLink()
+                                            }
+                                        });
+                                    } else {
+                                        if (!localList?.Entries?.Any(x => x?.Data?.Reference.Equals(newItem) ?? false) ?? false)
+                                            localList?.Entries?.Add(new LeveledItemEntry
+                                            {
+                                                Data = new LeveledItemEntryData
+                                                {
+                                                    Count = entry.Data!.Count,
+                                                    Level = entry.Data!.Level,
+                                                    Reference = newItem.ToLink()
+                                                }
+                                            });
+                                    }
                             }
                             break;
                         default: break;
